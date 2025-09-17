@@ -230,39 +230,47 @@ def nms(boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: float = 0.5):
     # github.com/pytorch/vision/blob/main/torchvision/csrc/ops/cpu/nms_kernel.cpp
     #############################################################################
     # Replace "pass" statement with your code
-    def IoU(b1, b2):
-        x1a, y1a, x2a, y2a = b1
-        x1b, y1b, x2b, y2b = b2
+    device = boxes.device
+    dtype = boxes.dtype
+    eps = torch.finfo(dtype).eps if torch.is_floating_point(boxes) else 1e-8
 
-        area_a = (x2a - x1a) * (y2a - y1a)
-        area_b = (x2b - x1b) * (y2b - y1b)
-
-        int_x = max(0, min(x2a, x2b) - max(x1a, x1b))
-        int_y = max(0, min(y2a, y2b) - max(y1a, y1b))
-        intersect = int_x * int_y
-        union = area_a + area_b - intersect
-
-        return intersect / union
-
-    scores, idx = scores.sort(descending=True)
-    boxes = boxes[idx]
-
-    scores = scores.tolist()
-    boxes = boxes.tolist()
+    # 점수 내림차순 정렬
+    scores_sorted, idx = scores.sort(descending=True)
+    boxes_sorted = boxes[idx]
 
     keep = []
-    discard = [0 for _ in range(len(scores))]
-    for i in range(len(scores)):
-        if discard[i]:
+    N = boxes_sorted.size(0)
+
+    x1 = boxes_sorted[:, 0]
+    y1 = boxes_sorted[:, 1]
+    x2 = boxes_sorted[:, 2]
+    y2 = boxes_sorted[:, 3]
+    areas = (x2 - x1).clamp(min=0) * (y2 - y1).clamp(min=0)
+
+    suppressed = torch.zeros(N, dtype=torch.bool, device=device)
+
+    for i in range(N):
+        if suppressed[i]:
             continue
         keep.append(idx[i])
-        for j in range(len(scores)):
-            if discard[j] or i == j:
-                continue
-            iou = IoU(boxes[i], boxes[j])
-            if iou > iou_threshold:
-                discard[j] = 1
-    keep = torch.tensor(keep, dtype=torch.long)
+        if i + 1 == N:
+            break
+
+        xx1 = torch.maximum(x1[i], x1[i+1:])
+        yy1 = torch.maximum(y1[i], y1[i+1:])
+        xx2 = torch.minimum(x2[i], x2[i+1:])
+        yy2 = torch.minimum(y2[i], y2[i+1:])
+
+        inter_w = (xx2 - xx1).clamp(min=0)
+        inter_h = (yy2 - yy1).clamp(min=0)
+        inter = inter_w * inter_h
+
+        union = areas[i] + areas[i+1:] - inter
+        iou = inter / (union + eps)
+
+        suppressed[i+1:] |= iou > iou_threshold
+
+    keep = torch.tensor(keep, dtype=torch.long, device=device)
     #############################################################################
     #                              END OF YOUR CODE                             #
     #############################################################################
